@@ -4,11 +4,15 @@
 
 __pycache__/
 *.py[cod]
+.venv/
+venv/
+ENV/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
 .coverage
 htmlcov/
+*.egg-info/
 
 node_modules/
 dist/
@@ -16,7 +20,6 @@ dist/
 
 .DS_Store
 *.log
-.repo-git/
 
 backend/.venv/
 frontend/.env.local
