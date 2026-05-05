@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.video import router as video_router
 from app.api.roi import router as roi_router
 from app.core.config import get_settings
 
@@ -13,7 +14,7 @@ def create_app() -> FastAPI:
         CORSMiddleware,
         allow_origins=[str(settings.frontend_origin).rstrip("/")],
         allow_credentials=True,
-        allow_methods=["GET"],
+        allow_methods=["GET", "POST", "OPTIONS"],
         allow_headers=["*"],
     )
 
@@ -22,6 +23,7 @@ def create_app() -> FastAPI:
         return {"status": "ok"}
 
     app.include_router(roi_router)
+    app.include_router(video_router)
 
     return app
 
