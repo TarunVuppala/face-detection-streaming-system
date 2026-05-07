@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from datetime import datetime
 from uuid import UUID
 
 from app.detection.types import FaceDetectionResult
@@ -11,4 +12,5 @@ class ProcessedFrame:
     timestamp_ms: int
     image_jpeg: bytes
     detection: FaceDetectionResult | None
-
+    processing_ms: float
+    published_at: datetime
