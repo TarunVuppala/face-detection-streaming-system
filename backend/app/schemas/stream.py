@@ -1,4 +1,5 @@
 from typing import Literal
+from datetime import datetime
 from uuid import UUID
 
 from pydantic import BaseModel
@@ -12,7 +13,7 @@ class StreamSessionStarted(BaseModel):
 
 
 class StreamErrorMessage(BaseModel):
-    type: Literal["segment.rejected", "stream.error"] = "segment.rejected"
+    type: Literal["segment.rejected", "stream.error"] = "stream.error"
     reason: str
 
 
@@ -24,4 +25,5 @@ class RoiStreamMessage(BaseModel):
     box: RoiBox | None
     confidence: float | None
     detector: str | None = None
-
+    processing_ms: float
+    published_at: datetime

@@ -46,4 +46,3 @@ class MediaPipeFaceDetector:
 
     def __exit__(self, *_: object) -> None:
         self.close()
-

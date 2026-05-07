@@ -31,13 +31,14 @@ class StreamSessionRepository:
         stream_session.ended_at = datetime.now(UTC)
         await self.session.commit()
 
-    async def increment_frame_count(self, session_id: UUID) -> None:
+    async def increment_frame_count(self, session_id: UUID) -> int:
         stream_session = await self.session.get(StreamSession, session_id)
         if stream_session is None:
-            return
+            return 0
 
         stream_session.frame_count += 1
         await self.session.commit()
+        return stream_session.frame_count
 
 
 class RoiObservationRepository:

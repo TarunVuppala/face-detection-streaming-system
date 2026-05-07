@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -7,6 +9,7 @@ from app.core.config import get_settings
 
 
 def create_app() -> FastAPI:
+    logging.basicConfig(level=logging.INFO, force=True)
     settings = get_settings()
 
     app = FastAPI(title=settings.app_name)

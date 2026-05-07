@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from io import BytesIO
+from tempfile import NamedTemporaryFile
 
 import av
 import numpy as np
@@ -25,26 +26,50 @@ class PyAvVideoDecoder:
         frames: list[DecodedFrame] = []
 
         try:
-            with av.open(BytesIO(segment), mode="r") as container:
-                video_stream = next(
-                    (stream for stream in container.streams if stream.type == "video"),
-                    None,
-                )
-                if video_stream is None:
-                    raise VideoDecodeError("missing_video_stream")
+            with NamedTemporaryFile(suffix=".webm") as temp_file:
+                temp_file.write(segment)
+                temp_file.flush()
 
-                for frame_index, frame in enumerate(container.decode(video=0)):
-                    frames.append(
-                        DecodedFrame(
-                            index=frame_index,
-                            timestamp_ms=self._timestamp_ms(frame),
-                            image=frame.to_ndarray(format="rgb24"),
-                        )
+                with av.open(temp_file.name, mode="r", format="webm") as container:
+                    video_stream = next(
+                        (stream for stream in container.streams if stream.type == "video"),
+                        None,
                     )
+                    if video_stream is None:
+                        raise VideoDecodeError("missing_video_stream")
+
+                    for frame_index, frame in enumerate(container.decode(video=0)):
+                        frames.append(
+                            DecodedFrame(
+                                index=frame_index,
+                                timestamp_ms=self._timestamp_ms(frame),
+                                image=frame.to_ndarray(format="rgb24"),
+                            )
+                        )
         except VideoDecodeError:
             raise
-        except FFmpegError as exc:
-            raise VideoDecodeError("decode_failed") from exc
+        except FFmpegError:
+            try:
+                with av.open(BytesIO(segment), mode="r", format="webm") as container:
+                    video_stream = next(
+                        (stream for stream in container.streams if stream.type == "video"),
+                        None,
+                    )
+                    if video_stream is None:
+                        raise VideoDecodeError("missing_video_stream")
+
+                    for frame_index, frame in enumerate(container.decode(video=0)):
+                        frames.append(
+                            DecodedFrame(
+                                index=frame_index,
+                                timestamp_ms=self._timestamp_ms(frame),
+                                image=frame.to_ndarray(format="rgb24"),
+                            )
+                        )
+            except VideoDecodeError:
+                raise
+            except FFmpegError as exc:
+                raise VideoDecodeError("decode_failed") from exc
 
         if not frames:
             raise VideoDecodeError("no_frames")

@@ -31,3 +31,32 @@ def normalized_box_to_pixels(
 
     return RoiBox(x=x1, y=y1, width=box_width, height=box_height)
 
+
+def expand_box_with_padding(
+    *,
+    box: RoiBox,
+    frame_width: int,
+    frame_height: int,
+    padding_ratio: float = 0.03,
+) -> RoiBox | None:
+    if frame_width <= 0 or frame_height <= 0:
+        raise ValueError("frame dimensions must be positive")
+
+    if padding_ratio < 0:
+        raise ValueError("padding_ratio must be non-negative")
+
+    padding_x = round(box.width * padding_ratio)
+    padding_y = round(box.height * padding_ratio)
+
+    x1 = min(max(box.x - padding_x, 0), frame_width)
+    y1 = min(max(box.y - padding_y, 0), frame_height)
+    x2 = min(max(box.x + box.width + padding_x, 0), frame_width)
+    y2 = min(max(box.y + box.height + padding_y, 0), frame_height)
+
+    box_width = x2 - x1
+    box_height = y2 - y1
+
+    if box_width <= 0 or box_height <= 0:
+        return None
+
+    return RoiBox(x=x1, y=y1, width=box_width, height=box_height)
