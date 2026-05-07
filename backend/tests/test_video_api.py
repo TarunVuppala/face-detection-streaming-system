@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 from fastapi.testclient import TestClient
@@ -37,6 +38,8 @@ class FakeProcessor:
                 timestamp_ms=42,
                 image_jpeg=b"\xff\xd8\xff\xd9",
                 detection=FaceDetectionResult(box=RoiBox(x=1, y=2, width=3, height=4), confidence=0.9),
+                processing_ms=5.0,
+                published_at=datetime.now(UTC),
             )
         ]
 

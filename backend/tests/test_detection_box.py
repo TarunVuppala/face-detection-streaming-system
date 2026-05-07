@@ -1,6 +1,6 @@
 import pytest
 
-from app.detection.box import normalized_box_to_pixels
+from app.detection.box import expand_box_with_padding, normalized_box_to_pixels
 from app.detection.types import RoiBox
 
 
@@ -54,3 +54,22 @@ def test_normalized_box_to_pixels_requires_positive_frame_dimensions() -> None:
             frame_height=100,
         )
 
+
+def test_expand_box_with_padding_clamps_to_frame_bounds() -> None:
+    box = expand_box_with_padding(
+        box=RoiBox(x=4, y=5, width=20, height=30),
+        frame_width=24,
+        frame_height=28,
+        padding_ratio=0.25,
+    )
+
+    assert box == RoiBox(x=0, y=0, width=24, height=28)
+
+
+def test_expand_box_with_padding_requires_positive_frame_dimensions() -> None:
+    with pytest.raises(ValueError, match="frame dimensions"):
+        expand_box_with_padding(
+            box=RoiBox(x=1, y=1, width=10, height=10),
+            frame_width=0,
+            frame_height=100,
+        )
