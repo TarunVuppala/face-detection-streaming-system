@@ -7,7 +7,6 @@ import {
   type StreamErrorMessage,
   type StreamSessionStarted,
 } from '../hooks/useStreaming'
-import type { StreamingState } from '../store/streamingStore'
 import { useStreamingStore } from '../store/streamingStore'
 
 
@@ -27,11 +26,9 @@ interface StreamingManagerRefs {
 
 export class StreamingManager {
   private refs: StreamingManagerRefs
-  private store: StreamingState
 
   constructor(refs: StreamingManagerRefs) {
     this.refs = refs
-    this.store = useStreamingStore.getState()
   }
 
   
@@ -252,7 +249,7 @@ export class StreamingManager {
         return
       }
 
-      this.handleFeedSocketMessage(event, currentSessionId, streamGeneration)
+      this.handleFeedSocketMessage(event)
     }
 
     socket.onerror = () => {
@@ -284,9 +281,9 @@ export class StreamingManager {
     this.refs.feedSocketRef.current = socket
   }
 
-  private handleFeedSocketMessage = (event: MessageEvent, currentSessionId: string, streamGeneration: number) => {
+  private handleFeedSocketMessage = (event: MessageEvent) => {
     if (typeof event.data === 'string') {
-      let message: RoiStreamMessage | null = null
+      let message: RoiStreamMessage | null
       try {
         message = JSON.parse(event.data) as RoiStreamMessage
       } catch {
@@ -297,7 +294,7 @@ export class StreamingManager {
         return
       }
 
-      this.processRoiMessage(message, currentSessionId)
+      this.processRoiMessage(message)
       return
     }
 
@@ -305,7 +302,7 @@ export class StreamingManager {
     this.processFrameData(event)
   }
 
-  private processRoiMessage = (message: RoiStreamMessage, currentSessionId: string) => {
+  private processRoiMessage = (message: RoiStreamMessage) => {
     const store = useStreamingStore.getState()
 
     const publishedAt = Date.parse(message.published_at)
@@ -431,7 +428,7 @@ export class StreamingManager {
       const store = useStreamingStore.getState()
       store.mergeRoiRows(items)
     } catch {
-      
+      // Ignore errors when loading persisted ROIs
     }
   }
 

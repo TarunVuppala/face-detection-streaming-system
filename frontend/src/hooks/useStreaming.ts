@@ -141,6 +141,7 @@ export function useStreaming() {
   const streamGenerationRef = useRef(0)
   const timelineSeenRef = useRef<Set<string>>(new Set())
   const frameReceiptTimesRef = useRef<number[]>([])
+  const startRecorderRef = useRef<((stream: MediaStream, streamGeneration: number) => void) | null>(null)
 
   const pushTimeline = useCallback((id: string, label: string) => {
     if (timelineSeenRef.current.has(id)) {
@@ -341,7 +342,7 @@ export function useStreaming() {
             return
           }
 
-          startRecorder(stream, streamGeneration)
+          startRecorderRef.current?.(stream, streamGeneration)
         })()
       }
 
@@ -359,6 +360,10 @@ export function useStreaming() {
     },
     [captureRate, cleanupResources, clearClipTimer],
   )
+
+  useEffect(() => {
+    startRecorderRef.current = startRecorder
+  }, [startRecorder])
 
   const stopStream = useCallback(() => {
     streamGenerationRef.current += 1
@@ -403,7 +408,7 @@ export function useStreaming() {
         }
 
         try {
-          startRecorder(stream, streamGeneration)
+          startRecorderRef.current?.(stream, streamGeneration)
           setStatus('streaming')
         } catch (cause) {
           if (streamGenerationRef.current !== streamGeneration) {
@@ -532,7 +537,7 @@ export function useStreaming() {
 
       feedSocketRef.current = socket
     },
-    [cleanupResources, pushTimeline, startRecorder, upsertRoiRow],
+    [cleanupResources, pushTimeline, upsertRoiRow],
   )
 
   const startStream = useCallback(async () => {
@@ -585,7 +590,7 @@ export function useStreaming() {
           return
         }
 
-        let message: StreamSessionStarted | StreamErrorMessage | null = null
+        let message: StreamSessionStarted | StreamErrorMessage | null
 
         try {
           message = JSON.parse(event.data as string) as StreamSessionStarted | StreamErrorMessage

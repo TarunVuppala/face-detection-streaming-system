@@ -1,10 +1,23 @@
 # Frontend
 
-React client for camera capture, annotated stream playback, and ROI metadata display.
+React client for the live camera stream, annotated feed playback, and ROI table.
 
-## Scripts
+## Run
 
-- `npm run dev`: start the Vite development server.
-- `npm run build`: type-check and build the frontend.
-- `npm run preview`: preview the production build.
+```bash
+cd frontend
+npm install
+npm run dev
+```
 
+## Environment
+
+- `VITE_BACKEND_URL`
+- `VITE_BACKEND_WS_URL`
+
+## Behavior
+
+- Captures camera video with `MediaRecorder`.
+- Records short complete `video/webm` clips and sends them to the ingest websocket.
+- Subscribes to the session-scoped feed websocket to render annotated JPEG frames.
+- Loads persisted ROI data from the backend ROI endpoint and keeps the latest observations visible.

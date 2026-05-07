@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import { useStreamingStore } from './store/streamingStore'
 import { StreamingManager } from './services/StreamingManager'
 import {
@@ -57,25 +57,19 @@ function App() {
   const setCaptureRate = useStreamingStore((state) => state.setCaptureRate)
 
 
-  const managerRef = useRef<StreamingManager | null>(null)
-
-  if (!managerRef.current) {
-    managerRef.current = new StreamingManager({
-      localVideoRef,
-      mediaStreamRef,
-      recorderRef,
-      clipTimerRef,
-      ingestSocketRef,
-      feedSocketRef,
-      frameUrlRef,
-      stopRequestedRef,
-      streamGenerationRef,
-      frameReceiptTimesRef,
-      startRecorderRef,
-    })
-  }
-
-  const manager = managerRef.current
+  const manager = useMemo(() => new StreamingManager({
+    localVideoRef,
+    mediaStreamRef,
+    recorderRef,
+    clipTimerRef,
+    ingestSocketRef,
+    feedSocketRef,
+    frameUrlRef,
+    stopRequestedRef,
+    streamGenerationRef,
+    frameReceiptTimesRef,
+    startRecorderRef,
+  }), [])
 
 
   useEffect(() => {
