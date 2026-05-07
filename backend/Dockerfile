@@ -14,12 +14,11 @@ RUN apt-get update \
 
 COPY pyproject.toml ./
 RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir ".[dev]"
+    && pip install --no-cache-dir "."
 
 COPY alembic.ini ./
 COPY alembic ./alembic
 COPY app ./app
-COPY tests ./tests
 
 EXPOSE 8000
 

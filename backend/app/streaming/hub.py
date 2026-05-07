@@ -52,14 +52,19 @@ class FeedHub:
                 processing_ms=frame.processing_ms,
                 published_at=frame.published_at,
             )
+            
+            # Pack metadata and image into a single binary message
+            json_bytes = message.model_dump_json().encode("utf-8")
+            header = len(json_bytes).to_bytes(4, byteorder="big")
+            payload = header + json_bytes + frame.image_jpeg
+
             for client in clients:
                 if client.application_state != WebSocketState.CONNECTED:
                     self.disconnect(client)
                     continue
 
                 try:
-                    await client.send_bytes(frame.image_jpeg)
-                    await client.send_json(message.model_dump(mode="json"))
+                    await client.send_bytes(payload)
                 except Exception:
                     self.disconnect(client)
 

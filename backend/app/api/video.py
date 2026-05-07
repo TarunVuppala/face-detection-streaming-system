@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from uuid import UUID
 
@@ -40,6 +41,7 @@ async def ingest_video(
     await websocket.send_json(StreamSessionStarted(session_id=stream_session.id).model_dump(mode="json"))
 
     processor = FrameProcessor.from_session(db)
+    last_frame_ts: int | None = None
 
     try:
         while True:
@@ -67,6 +69,7 @@ async def ingest_video(
                 break
 
             await hub.broadcast(processed_frames)
+
     except WebSocketDisconnect:
         logger.info("ingest websocket disconnected for session %s", stream_session.id)
         await session_repository.mark_finished(stream_session.id)

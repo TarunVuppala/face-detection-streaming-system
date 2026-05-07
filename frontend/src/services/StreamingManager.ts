@@ -33,7 +33,11 @@ export class StreamingManager {
 
   
 
+  private playbackQueue: { message: RoiStreamMessage; jpegBytes: Uint8Array }[] = []
+  private playbackTimer: number | null = null
+
   closeSockets = () => {
+    this.stopPlaybackLoop()
     if (this.refs.ingestSocketRef.current) {
       this.refs.ingestSocketRef.current.close()
       this.refs.ingestSocketRef.current = null
@@ -281,25 +285,118 @@ export class StreamingManager {
     this.refs.feedSocketRef.current = socket
   }
 
+  private startPlaybackLoop = () => {
+    if (this.playbackTimer !== null) return
+
+    const tick = () => {
+      if (this.playbackQueue.length === 0) {
+        this.playbackTimer = window.setTimeout(tick, 50)
+        return
+      }
+
+      // EMERGENCY CATCH-UP: If the queue is massive (> 60 frames / ~2-4s), 
+      // we are way too far behind. Drop everything and jump to the end.
+      if (this.playbackQueue.length > 60) {
+        console.warn(`Playback queue too long (${this.playbackQueue.length} frames). Dropping for latency.`)
+        const latest = this.playbackQueue.pop()
+        this.playbackQueue = []
+        if (latest) {
+          this.processRoiMessage(latest.message)
+          this.renderFrame(latest.jpegBytes)
+        }
+        this.playbackTimer = window.setTimeout(tick, 33)
+        return
+      }
+
+      // DYNAMIC SPEED-UP: If the queue is growing, process more frames per tick
+      const burstSize = this.playbackQueue.length > 30 ? 4 : this.playbackQueue.length > 15 ? 2 : 1
+      
+      for (let i = 0; i < burstSize; i++) {
+        const item = this.playbackQueue.shift()
+        if (item) {
+          this.processRoiMessage(item.message)
+          this.renderFrame(item.jpegBytes)
+        }
+      }
+
+      // Schedule next tick based on queue depth to maintain "near real-time"
+      // If queue is deep, tick faster.
+      const nextDelay = this.playbackQueue.length > 10 ? 16 : 40
+      this.playbackTimer = window.setTimeout(tick, nextDelay)
+    }
+
+    this.playbackTimer = window.setTimeout(tick, 0)
+  }
+
+  private stopPlaybackLoop = () => {
+    if (this.playbackTimer !== null) {
+      window.clearTimeout(this.playbackTimer)
+      this.playbackTimer = null
+    }
+    this.playbackQueue = []
+  }
+
   private handleFeedSocketMessage = (event: MessageEvent) => {
-    if (typeof event.data === 'string') {
-      let message: RoiStreamMessage | null
-      try {
-        message = JSON.parse(event.data) as RoiStreamMessage
-      } catch {
-        return
-      }
-
-      if (!message) {
-        return
-      }
-
-      this.processRoiMessage(message)
+    if (!(event.data instanceof ArrayBuffer)) {
       return
     }
 
+    const buffer = event.data
+    const view = new DataView(buffer)
     
-    this.processFrameData(event)
+    if (buffer.byteLength < 4) return
+    const jsonLength = view.getUint32(0, false)
+    
+    if (buffer.byteLength < 4 + jsonLength) return
+    
+    const jsonBytes = new Uint8Array(buffer, 4, jsonLength)
+    const jsonString = new TextDecoder().decode(jsonBytes)
+    
+    let message: RoiStreamMessage | null
+    try {
+      message = JSON.parse(jsonString) as RoiStreamMessage
+    } catch {
+      return
+    }
+
+    if (!message) return
+
+    const jpegBytes = new Uint8Array(buffer, 4 + jsonLength)
+    
+    // Push to jitter buffer instead of immediate render
+    this.playbackQueue.push({ message, jpegBytes })
+    this.startPlaybackLoop()
+  }
+
+  private renderFrame = (jpegBytes: Uint8Array) => {
+    const store = useStreamingStore.getState()
+    const now = Date.now()
+    const hadNoFramesYet = this.refs.frameReceiptTimesRef.current.length === 0
+
+    this.refs.frameReceiptTimesRef.current = [
+      ...this.refs.frameReceiptTimesRef.current.filter((timestamp: number) => now - timestamp <= 5000),
+      now,
+    ]
+    const fps = Math.round((this.refs.frameReceiptTimesRef.current.length / 5) * 10) / 10
+
+    store.updateStreamStats({
+      framesDecoded: store.streamStats.framesDecoded + 1,
+      fps,
+    })
+
+    if (hadNoFramesYet) {
+      store.pushTimeline(`first-frame:${store.sessionId}`, 'First frame received')
+    }
+
+    const image = new Blob([jpegBytes as any], { type: 'image/jpeg' })
+    const nextUrl = URL.createObjectURL(image)
+
+    if (this.refs.frameUrlRef.current) {
+      URL.revokeObjectURL(this.refs.frameUrlRef.current)
+    }
+
+    this.refs.frameUrlRef.current = nextUrl
+    useStreamingStore.setState({ frameUrl: nextUrl })
   }
 
   private processRoiMessage = (message: RoiStreamMessage) => {
@@ -349,40 +446,6 @@ export class StreamingManager {
 
       store.upsertRoiRow(nextRow)
     }
-  }
-
-  private processFrameData = (event: MessageEvent) => {
-    const store = useStreamingStore.getState()
-    const now = Date.now()
-    const hadNoFramesYet = this.refs.frameReceiptTimesRef.current.length === 0
-
-    this.refs.frameReceiptTimesRef.current = [
-      ...this.refs.frameReceiptTimesRef.current.filter((timestamp: number) => now - timestamp <= 5000),
-      now,
-    ]
-    const fps = Math.round((this.refs.frameReceiptTimesRef.current.length / 5) * 10) / 10
-
-    store.updateStreamStats({
-      framesDecoded: store.streamStats.framesDecoded + 1,
-      fps,
-    })
-
-    if (hadNoFramesYet) {
-      store.pushTimeline(`first-frame:${store.sessionId}`, 'First frame received')
-    }
-
-    const image =
-      event.data instanceof Blob
-        ? event.data
-        : new Blob([event.data], { type: 'image/jpeg' })
-    const nextUrl = URL.createObjectURL(image)
-
-    if (this.refs.frameUrlRef.current) {
-      URL.revokeObjectURL(this.refs.frameUrlRef.current)
-    }
-
-    this.refs.frameUrlRef.current = nextUrl
-    useStreamingStore.setState({ frameUrl: nextUrl })
   }
 
   

@@ -52,7 +52,7 @@ const createStreamingStore = () =>
     frameUrl: null,
     localCameraReady: false,
     showDetectionOverlay: true,
-    captureRate: "1",
+    captureRate: "2",
 
     roiRows: [],
     activeDetection: {

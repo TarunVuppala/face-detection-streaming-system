@@ -31,15 +31,11 @@ class StreamSessionRepository:
         stream_session.ended_at = datetime.now(UTC)
         await self.session.commit()
 
-    async def increment_frame_count(self, session_id: UUID) -> int:
+    async def update_frame_count(self, session_id: UUID, count: int) -> None:
         stream_session = await self.session.get(StreamSession, session_id)
-        if stream_session is None:
-            return 0
-
-        stream_session.frame_count += 1
-        await self.session.commit()
-        return stream_session.frame_count
-
+        if stream_session is not None:
+            stream_session.frame_count = count
+            # We don't commit here; let the processor handle the segment transaction
 
 class RoiObservationRepository:
     def __init__(self, session: AsyncSession) -> None:
@@ -70,8 +66,7 @@ class RoiObservationRepository:
             detector=detector,
         )
         self.session.add(observation)
-        await self.session.commit()
-        await self.session.refresh(observation)
+        # No internal commit; batching is managed by the caller
         return observation
 
     async def list_latest(
