@@ -19,7 +19,6 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class FramePipelineDependencies:
-    decoder: Any
     detector: Any
     annotator: PillowFrameAnnotator
     session_repository: StreamSessionRepository
@@ -36,11 +35,9 @@ class FrameProcessor:
     @classmethod
     def from_session(cls, db: AsyncSession) -> "FrameProcessor":
         from app.detection.mediapipe_detector import MediaPipeFaceDetector
-        from app.streaming.decoder import PyAvVideoDecoder
 
         return cls(
             FramePipelineDependencies(
-                decoder=PyAvVideoDecoder(),
                 detector=MediaPipeFaceDetector(),
                 annotator=PillowFrameAnnotator(),
                 session_repository=StreamSessionRepository(db),
@@ -63,50 +60,56 @@ class FrameProcessor:
     def _clear_box_history(self, session_id: UUID) -> None:
         self._box_history.pop(session_id, None)
 
-    async def process_segment(self, *, session_id: UUID, segment: bytes) -> list[ProcessedFrame]:
-        from app.db.models import StreamSession as SessionModel
+    async def process_frame(self, *, session_id: UUID, image_bytes: bytes) -> ProcessedFrame | None:
+        from PIL import Image
+        import numpy as np
+
+        # Fast image parsing without FFmpeg
+        try:
+            with Image.open(BytesIO(image_bytes)) as pil_img:
+                if pil_img.mode != "RGB":
+                    pil_img = pil_img.convert("RGB")
+                image_array = np.array(pil_img)
+        except Exception:
+            logger.exception("failed to parse incoming frame bytes")
+            return None
+
+        frame_started_at = perf_counter()
         
-        decoded_frames = self.dependencies.decoder.decode(segment)
-        logger.info("decoded %s frames for session %s", len(decoded_frames), session_id)
-        processed_frames: list[ProcessedFrame] = []
+        # Get/Update frame count (In a high-speed system, we might skip DB count per frame 
+        # for extreme speed, but let's keep it for tracking for now)
+        from app.db.models import StreamSession as SessionModel
+        stream_session = await self.dependencies.session_repository.session.get(SessionModel, session_id)
+        if stream_session:
+            stream_session.frame_count += 1
+            frame_number = stream_session.frame_count
+        else:
+            frame_number = 0
 
-        # Get initial frame count from session to maintain continuity in memory
-        stream_session = await self.dependencies.session_repository.session.get(
-            SessionModel, 
-            session_id
-        )
-        current_frame_count = stream_session.frame_count if stream_session else 0
-
-        for decoded_frame in decoded_frames:
-            frame_started_at = perf_counter()
-            current_frame_count += 1
-            frame_number = current_frame_count
-            
-            detection = self.dependencies.detector.detect_one(decoded_frame.image)
-            frame_height, frame_width = decoded_frame.image.shape[:2]
-            if detection is not None:
-                smoothed_box = self._smooth_box(session_id, detection.box)
-                padded_box = expand_box_with_padding(
-                    box=smoothed_box,
-                    frame_width=frame_width,
-                    frame_height=frame_height,
-                )
-                if padded_box is None:
-                    self._clear_box_history(session_id)
-                    detection = None
-                else:
-                    detection = FaceDetectionResult(
-                        box=padded_box,
-                        confidence=detection.confidence,
-                        detector=detection.detector,
-                    )
-            if detection is None:
+        frame_height, frame_width = image_array.shape[:2]
+        detection = self.dependencies.detector.detect_one(image_array)
+        
+        if detection is not None:
+            smoothed_box = self._smooth_box(session_id, detection.box)
+            padded_box = expand_box_with_padding(
+                box=smoothed_box,
+                frame_width=frame_width,
+                frame_height=frame_height,
+            )
+            if padded_box is None:
                 self._clear_box_history(session_id)
+                detection = None
             else:
+                detection = FaceDetectionResult(
+                    box=padded_box,
+                    confidence=detection.confidence,
+                    detector=detection.detector,
+                )
+                # Persist ROI (No commit here, let the endpoint handle it or batch it)
                 await self.dependencies.roi_repository.create(
                     session_id=session_id,
                     frame_number=frame_number,
-                    timestamp_ms=decoded_frame.timestamp_ms,
+                    timestamp_ms=0, # In MJPEG mode, absolute timestamps are less critical
                     x=detection.box.x,
                     y=detection.box.y,
                     width=detection.box.width,
@@ -114,33 +117,33 @@ class FrameProcessor:
                     confidence=detection.confidence,
                     detector=detection.detector,
                 )
+        else:
+            self._clear_box_history(session_id)
 
-            image_jpeg = (
-                self.dependencies.annotator.draw_roi(
-                    decoded_frame.image,
-                    detection.box,
-                    confidence=detection.confidence,
-                )
-                if detection is not None
-                else self.dependencies.annotator.encode_jpeg(decoded_frame.image)
+        # Draw ROI
+        image_jpeg = (
+            self.dependencies.annotator.draw_roi(
+                image_array,
+                detection.box,
+                confidence=detection.confidence,
             )
-            processing_ms = round((perf_counter() - frame_started_at) * 1000, 2)
-            published_at = datetime.now(UTC)
-            
-            processed_frames.append(
-                ProcessedFrame(
-                    session_id=session_id,
-                    frame_number=frame_number,
-                    timestamp_ms=decoded_frame.timestamp_ms,
-                    image_jpeg=image_jpeg,
-                    detection=detection,
-                    processing_ms=processing_ms,
-                    published_at=published_at,
-                )
-            )
+            if detection is not None
+            else self.dependencies.annotator.encode_jpeg(image_array)
+        )
 
-        # Batch update session and commit all observations at once
-        await self.dependencies.session_repository.update_frame_count(session_id, current_frame_count)
-        await self.dependencies.session_repository.session.commit()
+        processing_ms = round((perf_counter() - frame_started_at) * 1000, 2)
+        published_at = datetime.now(UTC)
 
-        return processed_frames
+        # DO NOT COMMIT HERE. Decouple DB IO from the real-time stream.
+        # The session repository should be flushed periodically or at the end.
+        # For now, we rely on the parent loop or a background task if persistence is critical.
+
+        return ProcessedFrame(
+            session_id=session_id,
+            frame_number=frame_number,
+            timestamp_ms=0,
+            image_jpeg=image_jpeg,
+            detection=detection,
+            processing_ms=processing_ms,
+            published_at=published_at,
+        )

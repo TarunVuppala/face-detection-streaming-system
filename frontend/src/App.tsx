@@ -10,12 +10,12 @@ import {
 
 function formatClock(value: string | null | undefined): string {
   if (!value) {
-    return '—'
+    return '-'
   }
 
   const parsed = new Date(value)
   if (Number.isNaN(parsed.getTime())) {
-    return '—'
+    return '-'
   }
 
   return parsed.toLocaleTimeString([], {
@@ -29,7 +29,6 @@ function App() {
 
   const localVideoRef = useRef<HTMLVideoElement | null>(null)
   const mediaStreamRef = useRef<MediaStream | null>(null)
-  const recorderRef = useRef<MediaRecorder | null>(null)
   const clipTimerRef = useRef<number | null>(null)
   const ingestSocketRef = useRef<WebSocket | null>(null)
   const feedSocketRef = useRef<WebSocket | null>(null)
@@ -37,7 +36,6 @@ function App() {
   const stopRequestedRef = useRef(false)
   const streamGenerationRef = useRef(0)
   const frameReceiptTimesRef = useRef<number[]>([])
-  const startRecorderRef = useRef<((stream: MediaStream, streamGeneration: number) => void) | null>(null)
 
 
   const status = useStreamingStore((state) => state.status)
@@ -60,7 +58,6 @@ function App() {
   const manager = useMemo(() => new StreamingManager({
     localVideoRef,
     mediaStreamRef,
-    recorderRef,
     clipTimerRef,
     ingestSocketRef,
     feedSocketRef,
@@ -68,13 +65,7 @@ function App() {
     stopRequestedRef,
     streamGenerationRef,
     frameReceiptTimesRef,
-    startRecorderRef,
   }), [])
-
-
-  useEffect(() => {
-    startRecorderRef.current = manager.startRecorder
-  }, [manager])
 
 
 
@@ -98,7 +89,7 @@ function App() {
             : 'Error'
 
   const systemLatencyLabel =
-    streamStats.currentLatencyMs !== null ? `${Math.round(streamStats.currentLatencyMs)} ms` : '—'
+    streamStats.currentLatencyMs !== null ? `${Math.round(streamStats.currentLatencyMs)} ms` : '-'
 
   return (
     <main className="flex h-screen w-screen overflow-hidden bg-white text-slate-900">

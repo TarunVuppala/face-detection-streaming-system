@@ -14,8 +14,8 @@ function metricLabel(label: string): ReactElement {
 }
 
 export function StatsDisplay({ stats }: StatsDisplayProps): ReactElement {
-  const latencyDisplay = stats.currentLatencyMs !== null ? `${Math.round(stats.currentLatencyMs)} ms` : '—'
-  const processingDisplay = stats.currentProcessingMs !== null ? `${Math.round(stats.currentProcessingMs)} ms` : '—'
+  const latencyDisplay = stats.currentLatencyMs !== null ? `${Math.round(stats.currentLatencyMs)} ms` : '-'
+  const processingDisplay = stats.currentProcessingMs !== null ? `${Math.round(stats.currentProcessingMs)} ms` : '-'
 
   return (
     <div className="flex flex-col gap-2 p-2">

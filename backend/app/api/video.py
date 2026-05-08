@@ -1,4 +1,3 @@
-import asyncio
 import logging
 from uuid import UUID
 
@@ -41,36 +40,27 @@ async def ingest_video(
     await websocket.send_json(StreamSessionStarted(session_id=stream_session.id).model_dump(mode="json"))
 
     processor = FrameProcessor.from_session(db)
-    last_frame_ts: int | None = None
+    frames_since_commit = 0
 
     try:
         while True:
-            segment = await websocket.receive_bytes()
-            try:
-                processed_frames = await processor.process_segment(
-                    session_id=stream_session.id,
-                    segment=segment,
-                )
-            except Exception as exc:
-                from app.streaming.decoder import VideoDecodeError
+            image_bytes = await websocket.receive_bytes()
+            processed_frame = await processor.process_frame(
+                session_id=stream_session.id,
+                image_bytes=image_bytes,
+            )
 
-                if isinstance(exc, VideoDecodeError):
-                    logger.info("rejected video segment for session %s reason=%s", stream_session.id, exc)
-                    continue
+            if processed_frame:
+                await hub.broadcast([processed_frame])
 
-                await session_repository.mark_finished(stream_session.id, status="failed")
-                logger.exception("stream failed for session %s", stream_session.id)
-                await websocket.send_json(
-                    StreamErrorMessage(
-                        type="stream.error",
-                        reason="stream_failed",
-                    ).model_dump(mode="json")
-                )
-                break
-
-            await hub.broadcast(processed_frames)
+                # Periodic commit to avoid blocking the stream while still persisting data
+                frames_since_commit += 1
+                if frames_since_commit >= 15:
+                    await db.commit()
+                    frames_since_commit = 0
 
     except WebSocketDisconnect:
+
         logger.info("ingest websocket disconnected for session %s", stream_session.id)
         await session_repository.mark_finished(stream_session.id)
     finally:

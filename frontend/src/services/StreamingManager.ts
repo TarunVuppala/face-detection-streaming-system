@@ -13,7 +13,6 @@ import { useStreamingStore } from '../store/streamingStore'
 interface StreamingManagerRefs {
   localVideoRef: React.RefObject<HTMLVideoElement | null>
   mediaStreamRef: React.MutableRefObject<MediaStream | null>
-  recorderRef: React.MutableRefObject<MediaRecorder | null>
   clipTimerRef: React.MutableRefObject<number | null>
   ingestSocketRef: React.MutableRefObject<WebSocket | null>
   feedSocketRef: React.MutableRefObject<WebSocket | null>
@@ -21,23 +20,19 @@ interface StreamingManagerRefs {
   stopRequestedRef: React.MutableRefObject<boolean>
   streamGenerationRef: React.MutableRefObject<number>
   frameReceiptTimesRef: React.MutableRefObject<number[]>
-  startRecorderRef: React.MutableRefObject<((stream: MediaStream, streamGeneration: number) => void) | null>
 }
 
 export class StreamingManager {
   private refs: StreamingManagerRefs
+  private captureTimer: number | null = null
+  private hiddenCanvas: HTMLCanvasElement | null = null
+  private isProcessingFrame: boolean = false
 
   constructor(refs: StreamingManagerRefs) {
     this.refs = refs
   }
 
-  
-
-  private playbackQueue: { message: RoiStreamMessage; jpegBytes: Uint8Array }[] = []
-  private playbackTimer: number | null = null
-
   closeSockets = () => {
-    this.stopPlaybackLoop()
     if (this.refs.ingestSocketRef.current) {
       this.refs.ingestSocketRef.current.close()
       this.refs.ingestSocketRef.current = null
@@ -57,20 +52,11 @@ export class StreamingManager {
     useStreamingStore.setState({ frameUrl: null })
   }
 
-  clearClipTimer = () => {
-    if (this.refs.clipTimerRef.current !== null) {
-      window.clearTimeout(this.refs.clipTimerRef.current)
-      this.refs.clipTimerRef.current = null
-    }
-  }
-
   clearMedia = () => {
-    this.clearClipTimer()
-
-    if (this.refs.recorderRef.current && this.refs.recorderRef.current.state !== 'inactive') {
-      this.refs.recorderRef.current.stop()
+    if (this.captureTimer !== null) {
+      window.clearTimeout(this.captureTimer)
+      this.captureTimer = null
     }
-    this.refs.recorderRef.current = null
 
     if (this.refs.mediaStreamRef.current) {
       this.refs.mediaStreamRef.current.getTracks().forEach((track: MediaStreamTrack) => track.stop())
@@ -90,122 +76,57 @@ export class StreamingManager {
     this.clearFrame()
   }
 
-  
-
-  startRecorder = (stream: MediaStream, streamGeneration: number) => {
+  startCaptureLoop = (streamGeneration: number) => {
     const store = useStreamingStore.getState()
+    const video = this.refs.localVideoRef.current
+    if (!video) return
 
-    if (!('MediaRecorder' in window)) {
-      throw new Error('MediaRecorder is not available in this browser')
+    if (!this.hiddenCanvas) {
+      this.hiddenCanvas = document.createElement('canvas')
     }
-
-    const supportedMimeTypes = [
-      'video/webm;codecs=vp8',
-      'video/webm;codecs=vp9',
-      'video/webm',
-    ]
-    const mimeType = supportedMimeTypes.find((candidate) =>
-      typeof MediaRecorder.isTypeSupported === 'function'
-        ? MediaRecorder.isTypeSupported(candidate)
-        : candidate === 'video/webm',
-    )
-
-    if (!mimeType) {
-      throw new Error('No supported WebM mime type was found')
-    }
-
+    const canvas = this.hiddenCanvas
+    const ctx = canvas.getContext('2d', { alpha: false })
+    
     const socket = this.refs.ingestSocketRef.current
-    if (!socket || socket.readyState !== WebSocket.OPEN) {
-      throw new Error('Ingest websocket is not ready.')
-    }
+    if (!socket || socket.readyState !== WebSocket.OPEN) return
 
-    const recorder = new MediaRecorder(stream, { mimeType })
-    const clipParts: BlobPart[] = []
-
-    recorder.ondataavailable = (event) => {
-      if (event.data.size) {
-        clipParts.push(event.data)
-      }
-    }
-
-    recorder.onerror = () => {
-      if (!this.refs.stopRequestedRef.current && this.refs.streamGenerationRef.current === streamGeneration) {
-        useStreamingStore.setState({
-          error: 'MediaRecorder failed while capturing the camera stream.',
-          status: 'error',
-        })
-        this.refs.stopRequestedRef.current = true
-        this.cleanupResources()
-      }
-    }
-
-    recorder.onstop = () => {
-      this.clearClipTimer()
-      this.refs.recorderRef.current = null
-
+    const tick = () => {
       if (this.refs.stopRequestedRef.current || this.refs.streamGenerationRef.current !== streamGeneration) {
         return
       }
 
-      void (async () => {
-        try {
-          const clipBlob = new Blob(clipParts, { type: mimeType })
-          if (!clipBlob.size) {
-            throw new Error('Recorded clip was empty.')
+      if (this.isProcessingFrame) {
+        requestAnimationFrame(tick)
+        return
+      }
+
+      if (video.videoWidth > 0 && video.videoHeight > 0) {
+        canvas.width = video.videoWidth
+        canvas.height = video.videoHeight
+        ctx?.drawImage(video, 0, 0)
+        
+        canvas.toBlob((blob) => {
+          if (blob && socket.readyState === WebSocket.OPEN) {
+            this.isProcessingFrame = true
+            blob.arrayBuffer().then((buffer) => {
+              if (socket.readyState === WebSocket.OPEN) {
+                socket.send(buffer)
+              } else {
+                this.isProcessingFrame = false
+              }
+            }).catch(() => {
+              this.isProcessingFrame = false
+            })
           }
+        }, 'image/jpeg', 0.7)
+      }
 
-          const payload = await clipBlob.arrayBuffer()
-          if (
-            this.refs.stopRequestedRef.current ||
-            this.refs.streamGenerationRef.current !== streamGeneration ||
-            socket.readyState !== WebSocket.OPEN
-          ) {
-            return
-          }
-
-          socket.send(payload)
-        } catch {
-          if (this.refs.streamGenerationRef.current !== streamGeneration) {
-            return
-          }
-
-          useStreamingStore.setState({
-            error: 'Failed to encode the video clip for upload.',
-            status: 'error',
-          })
-          this.refs.stopRequestedRef.current = true
-          this.cleanupResources()
-          return
-        }
-
-        if (
-          this.refs.stopRequestedRef.current ||
-          this.refs.streamGenerationRef.current !== streamGeneration ||
-          socket.readyState !== WebSocket.OPEN
-        ) {
-          return
-        }
-
-        if (this.refs.startRecorderRef.current) {
-          this.refs.startRecorderRef.current(stream, streamGeneration)
-        }
-      })()
+      const delay = captureRateOptions[store.captureRate] / 4
+      this.captureTimer = window.setTimeout(tick, Math.max(delay, 50))
     }
 
-    this.refs.recorderRef.current = recorder
-    recorder.start()
-    this.refs.clipTimerRef.current = window.setTimeout(() => {
-      if (
-        !this.refs.stopRequestedRef.current &&
-        this.refs.streamGenerationRef.current === streamGeneration &&
-        recorder.state === 'recording'
-      ) {
-        recorder.stop()
-      }
-    }, captureRateOptions[store.captureRate])
+    tick()
   }
-
-  
 
   openFeedSocket = (currentSessionId: string, streamGeneration: number) => {
     const socket = new WebSocket(
@@ -231,21 +152,8 @@ export class StreamingManager {
         return
       }
 
-      try {
-        this.startRecorder(stream, streamGeneration)
-        useStreamingStore.setState({ status: 'streaming' })
-      } catch (cause) {
-        if (this.refs.streamGenerationRef.current !== streamGeneration) {
-          return
-        }
-
-        useStreamingStore.setState({
-          error: cause instanceof Error ? cause.message : 'Unable to start the recorder.',
-          status: 'error',
-        })
-        this.refs.stopRequestedRef.current = true
-        this.cleanupResources()
-      }
+      this.startCaptureLoop(streamGeneration)
+      useStreamingStore.setState({ status: 'streaming' })
     }
 
     socket.onmessage = (event) => {
@@ -285,57 +193,6 @@ export class StreamingManager {
     this.refs.feedSocketRef.current = socket
   }
 
-  private startPlaybackLoop = () => {
-    if (this.playbackTimer !== null) return
-
-    const tick = () => {
-      if (this.playbackQueue.length === 0) {
-        this.playbackTimer = window.setTimeout(tick, 50)
-        return
-      }
-
-      // EMERGENCY CATCH-UP: If the queue is massive (> 60 frames / ~2-4s), 
-      // we are way too far behind. Drop everything and jump to the end.
-      if (this.playbackQueue.length > 60) {
-        console.warn(`Playback queue too long (${this.playbackQueue.length} frames). Dropping for latency.`)
-        const latest = this.playbackQueue.pop()
-        this.playbackQueue = []
-        if (latest) {
-          this.processRoiMessage(latest.message)
-          this.renderFrame(latest.jpegBytes)
-        }
-        this.playbackTimer = window.setTimeout(tick, 33)
-        return
-      }
-
-      // DYNAMIC SPEED-UP: If the queue is growing, process more frames per tick
-      const burstSize = this.playbackQueue.length > 30 ? 4 : this.playbackQueue.length > 15 ? 2 : 1
-      
-      for (let i = 0; i < burstSize; i++) {
-        const item = this.playbackQueue.shift()
-        if (item) {
-          this.processRoiMessage(item.message)
-          this.renderFrame(item.jpegBytes)
-        }
-      }
-
-      // Schedule next tick based on queue depth to maintain "near real-time"
-      // If queue is deep, tick faster.
-      const nextDelay = this.playbackQueue.length > 10 ? 16 : 40
-      this.playbackTimer = window.setTimeout(tick, nextDelay)
-    }
-
-    this.playbackTimer = window.setTimeout(tick, 0)
-  }
-
-  private stopPlaybackLoop = () => {
-    if (this.playbackTimer !== null) {
-      window.clearTimeout(this.playbackTimer)
-      this.playbackTimer = null
-    }
-    this.playbackQueue = []
-  }
-
   private handleFeedSocketMessage = (event: MessageEvent) => {
     if (!(event.data instanceof ArrayBuffer)) {
       return
@@ -363,9 +220,9 @@ export class StreamingManager {
 
     const jpegBytes = new Uint8Array(buffer, 4 + jsonLength)
     
-    // Push to jitter buffer instead of immediate render
-    this.playbackQueue.push({ message, jpegBytes })
-    this.startPlaybackLoop()
+    this.processRoiMessage(message)
+    this.renderFrame(jpegBytes)
+    this.isProcessingFrame = false
   }
 
   private renderFrame = (jpegBytes: Uint8Array) => {
@@ -388,6 +245,7 @@ export class StreamingManager {
       store.pushTimeline(`first-frame:${store.sessionId}`, 'First frame received')
     }
 
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const image = new Blob([jpegBytes as any], { type: 'image/jpeg' })
     const nextUrl = URL.createObjectURL(image)
 
@@ -448,8 +306,6 @@ export class StreamingManager {
     }
   }
 
-  
-
   stopStream = () => {
     this.refs.streamGenerationRef.current += 1
     this.refs.stopRequestedRef.current = true
@@ -472,8 +328,6 @@ export class StreamingManager {
       error: null,
     })
   }
-
-  
 
   loadPersistedRois = async (currentSessionId: string) => {
     try {
