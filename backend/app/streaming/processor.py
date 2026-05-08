@@ -1,16 +1,19 @@
-from dataclasses import dataclass
-from collections import defaultdict, deque
 import logging
+from collections import defaultdict, deque
+from dataclasses import dataclass
 from datetime import UTC, datetime
+from io import BytesIO
 from time import perf_counter
 from typing import Any, Deque
 from uuid import UUID
 
+import numpy as np
+from PIL import Image
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.repositories import RoiObservationRepository, StreamSessionRepository
 from app.detection.box import expand_box_with_padding
 from app.detection.types import FaceDetectionResult, RoiBox
-from app.db.repositories import RoiObservationRepository, StreamSessionRepository
 from app.streaming.annotator import PillowFrameAnnotator
 from app.streaming.types import ProcessedFrame
 
@@ -60,32 +63,38 @@ class FrameProcessor:
     def _clear_box_history(self, session_id: UUID) -> None:
         self._box_history.pop(session_id, None)
 
-    async def process_frame(self, *, session_id: UUID, image_bytes: bytes) -> ProcessedFrame | None:
-        from PIL import Image
-        import numpy as np
+    async def process_frame(
+        self, 
+        *, 
+        session_id: UUID, 
+        image_bytes: bytes, 
+        frame_number: int,
+        timestamp_ms: int
+    ) -> ProcessedFrame | None:
+        if not image_bytes or len(image_bytes) < 10:
+            logger.error("received empty or invalid frame bytes")
+            return None
 
-        # Fast image parsing without FFmpeg
+        # SECURITY/ROBUSTNESS: Magic Byte Validation (JPEG: FF D8 FF)
+        if image_bytes[:3] != b"\xff\xd8\xff":
+            logger.error(
+                "invalid image format for session %s. expected JPEG magic bytes, got: %s", 
+                session_id, 
+                image_bytes[:3].hex(" ")
+            )
+            return None
+
+        # Fast image parsing
         try:
             with Image.open(BytesIO(image_bytes)) as pil_img:
                 if pil_img.mode != "RGB":
                     pil_img = pil_img.convert("RGB")
                 image_array = np.array(pil_img)
         except Exception:
-            logger.exception("failed to parse incoming frame bytes")
+            logger.exception("failed to parse incoming frame bytes. size=%d", len(image_bytes))
             return None
 
         frame_started_at = perf_counter()
-        
-        # Get/Update frame count (In a high-speed system, we might skip DB count per frame 
-        # for extreme speed, but let's keep it for tracking for now)
-        from app.db.models import StreamSession as SessionModel
-        stream_session = await self.dependencies.session_repository.session.get(SessionModel, session_id)
-        if stream_session:
-            stream_session.frame_count += 1
-            frame_number = stream_session.frame_count
-        else:
-            frame_number = 0
-
         frame_height, frame_width = image_array.shape[:2]
         detection = self.dependencies.detector.detect_one(image_array)
         
@@ -105,11 +114,10 @@ class FrameProcessor:
                     confidence=detection.confidence,
                     detector=detection.detector,
                 )
-                # Persist ROI (No commit here, let the endpoint handle it or batch it)
                 await self.dependencies.roi_repository.create(
                     session_id=session_id,
                     frame_number=frame_number,
-                    timestamp_ms=0, # In MJPEG mode, absolute timestamps are less critical
+                    timestamp_ms=timestamp_ms,
                     x=detection.box.x,
                     y=detection.box.y,
                     width=detection.box.width,
@@ -120,7 +128,6 @@ class FrameProcessor:
         else:
             self._clear_box_history(session_id)
 
-        # Draw ROI
         image_jpeg = (
             self.dependencies.annotator.draw_roi(
                 image_array,
@@ -134,14 +141,10 @@ class FrameProcessor:
         processing_ms = round((perf_counter() - frame_started_at) * 1000, 2)
         published_at = datetime.now(UTC)
 
-        # DO NOT COMMIT HERE. Decouple DB IO from the real-time stream.
-        # The session repository should be flushed periodically or at the end.
-        # For now, we rely on the parent loop or a background task if persistence is critical.
-
         return ProcessedFrame(
             session_id=session_id,
             frame_number=frame_number,
-            timestamp_ms=0,
+            timestamp_ms=timestamp_ms,
             image_jpeg=image_jpeg,
             detection=detection,
             processing_ms=processing_ms,

@@ -1,7 +1,6 @@
 import {
   backendUrl,
   backendWsUrl,
-  captureRateOptions,
   type RoiRow,
   type RoiStreamMessage,
   type StreamErrorMessage,
@@ -27,6 +26,8 @@ export class StreamingManager {
   private captureTimer: number | null = null
   private hiddenCanvas: HTMLCanvasElement | null = null
   private isProcessingFrame: boolean = false
+  private lastFrameSentAt: number = 0
+  private jpegQuality: number = 0.6 // Initial quality
 
   constructor(refs: StreamingManagerRefs) {
     this.refs = refs
@@ -77,7 +78,6 @@ export class StreamingManager {
   }
 
   startCaptureLoop = (streamGeneration: number) => {
-    const store = useStreamingStore.getState()
     const video = this.refs.localVideoRef.current
     if (!video) return
 
@@ -88,15 +88,29 @@ export class StreamingManager {
     const ctx = canvas.getContext('2d', { alpha: false })
     
     const socket = this.refs.ingestSocketRef.current
-    if (!socket || socket.readyState !== WebSocket.OPEN) return
+    if (!socket) return
+    socket.binaryType = 'arraybuffer'
 
     const tick = () => {
       if (this.refs.stopRequestedRef.current || this.refs.streamGenerationRef.current !== streamGeneration) {
         return
       }
 
+      if (socket.readyState !== WebSocket.OPEN) {
+        this.captureTimer = window.setTimeout(tick, 100)
+        return
+      }
+
+      const now = Date.now()
+
+      // DEADLOCK PROTECTION: Safety release after 1s
+      if (this.isProcessingFrame && now - this.lastFrameSentAt > 1000) {
+        console.warn('Safety lock release triggered.')
+        this.isProcessingFrame = false
+      }
+
       if (this.isProcessingFrame) {
-        requestAnimationFrame(tick)
+        this.captureTimer = window.setTimeout(tick, 30)
         return
       }
 
@@ -104,25 +118,47 @@ export class StreamingManager {
         canvas.width = video.videoWidth
         canvas.height = video.videoHeight
         ctx?.drawImage(video, 0, 0)
-        
+
+        this.isProcessingFrame = true
+        const frameCaptureTimestamp = Date.now()
+        this.lastFrameSentAt = now
+
+        // ADAPTIVE QUALITY: Adjust based on real-time latency
+        const store = useStreamingStore.getState()
+        const latency = store.streamStats.currentLatencyMs ?? 0
+        if (latency > 300) {
+          this.jpegQuality = Math.max(0.3, this.jpegQuality - 0.1)
+        } else if (latency < 150) {
+          this.jpegQuality = Math.min(0.8, this.jpegQuality + 0.05)
+        }
+
         canvas.toBlob((blob) => {
           if (blob && socket.readyState === WebSocket.OPEN) {
-            this.isProcessingFrame = true
             blob.arrayBuffer().then((buffer) => {
               if (socket.readyState === WebSocket.OPEN) {
-                socket.send(buffer)
+                // Pack timestamp (8-byte BigInt BigEndian) + JPEG
+                const header = new ArrayBuffer(8)
+                new DataView(header).setBigUint64(0, BigInt(frameCaptureTimestamp), false)
+                
+                const payload = new Uint8Array(header.byteLength + buffer.byteLength)
+                payload.set(new Uint8Array(header), 0)
+                payload.set(new Uint8Array(buffer), header.byteLength)
+                
+                socket.send(payload)
               } else {
                 this.isProcessingFrame = false
               }
-            }).catch(() => {
+            }).catch((err) => {
+              console.error('Frame send fail:', err)
               this.isProcessingFrame = false
             })
+          } else {
+            this.isProcessingFrame = false
           }
-        }, 'image/jpeg', 0.7)
+        }, 'image/jpeg', this.jpegQuality)
       }
 
-      const delay = captureRateOptions[store.captureRate] / 4
-      this.captureTimer = window.setTimeout(tick, Math.max(delay, 50))
+      this.captureTimer = window.setTimeout(tick, 50)
     }
 
     tick()

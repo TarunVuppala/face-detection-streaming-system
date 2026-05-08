@@ -35,8 +35,10 @@ services:
     build:
       context: ./frontend
     environment:
-      VITE_BACKEND_URL: http://localhost:5173
-      VITE_BACKEND_WS_URL: ws://localhost:5173
+      # In production, these should point to the public domain/IP.
+      # For Docker Compose with Nginx, we can use the relative paths since they're proxied.
+      VITE_BACKEND_URL: ""
+      VITE_BACKEND_WS_URL: ""
     ports:
       - "5173:5173"
     depends_on:

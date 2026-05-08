@@ -41,26 +41,44 @@ async def ingest_video(
 
     processor = FrameProcessor.from_session(db)
     frames_since_commit = 0
+    current_frame_count = 0
 
     try:
         while True:
-            image_bytes = await websocket.receive_bytes()
-            processed_frame = await processor.process_frame(
-                session_id=stream_session.id,
-                image_bytes=image_bytes,
-            )
+            payload = await websocket.receive_bytes()
+            if len(payload) < 8:
+                logger.error("received invalid payload size: %d", len(payload))
+                continue
+                
+            # Unpack timestamp (8-byte BigInt BigEndian)
+            timestamp_ms = int.from_bytes(payload[:8], byteorder="big")
+            image_bytes = payload[8:]
+            
+            current_frame_count += 1
 
-            if processed_frame:
-                await hub.broadcast([processed_frame])
-
-                # Periodic commit to avoid blocking the stream while still persisting data
-                frames_since_commit += 1
-                if frames_since_commit >= 15:
-                    await db.commit()
-                    frames_since_commit = 0
-
+            try:
+                processed_frame = await processor.process_frame(
+                    session_id=stream_session.id,
+                    image_bytes=image_bytes,
+                    frame_number=current_frame_count,
+                    timestamp_ms=timestamp_ms,
+                )
+                
+                if processed_frame:
+                    await hub.broadcast([processed_frame])
+                    
+                    # Periodic commit to avoid blocking the stream while still persisting data
+                    frames_since_commit += 1
+                    if frames_since_commit >= 15:
+                        await session_repository.update_frame_count(stream_session.id, current_frame_count)
+                        await db.commit()
+                        frames_since_commit = 0
+                else:
+                    logger.warning("processor returned no frame for session %s", stream_session.id)
+            except Exception:
+                logger.exception("error processing frame for session %s", stream_session.id)
+                
     except WebSocketDisconnect:
-
         logger.info("ingest websocket disconnected for session %s", stream_session.id)
         await session_repository.mark_finished(stream_session.id)
     finally:

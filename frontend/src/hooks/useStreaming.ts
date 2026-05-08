@@ -55,8 +55,8 @@ export type TimelineEntry = {
 
 export type StreamStatus = 'idle' | 'starting' | 'streaming' | 'stopped' | 'error'
 
-export const backendUrl = import.meta.env.VITE_BACKEND_URL ?? 'http://localhost:8000'
-export const backendWsUrl = import.meta.env.VITE_BACKEND_WS_URL ?? 'ws://localhost:8000'
+export const backendUrl = import.meta.env.VITE_BACKEND_URL || `${window.location.protocol}//${window.location.host}`
+export const backendWsUrl = import.meta.env.VITE_BACKEND_WS_URL || `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}`
 const maxRows = 15
 
 export const captureRateOptions = {
